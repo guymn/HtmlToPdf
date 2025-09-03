@@ -44,7 +44,10 @@ app.post("/convert-html-to-pdf", upload.single("file"), async (req, res) => {
 
   try {
     // เปิด Chromium
-    const browser = await puppeteer.launch();
+    const browser = await puppeteer.launch({
+      headless: true, // หรือ "new" ถ้าใช้ puppeteer v21+
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    });
     const page = await browser.newPage();
 
     // โหลด HTML จากไฟล์
