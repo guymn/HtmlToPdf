@@ -1,11 +1,21 @@
 // server.js (Node.js)
 const express = require("express");
+const cors = require("cors"); // ✅ import cors
 const multer = require("multer");
 const puppeteer = require("puppeteer");
 const fs = require("fs");
 const path = require("path");
 
 const app = express();
+
+// ✅ เปิด CORS
+app.use(
+  cors({
+    origin: "http://localhost:4200", // ให้เฉพาะ frontend Angular
+    methods: ["GET", "POST"],
+    allowedHeaders: ["Content-Type"],
+  })
+);
 
 // ✅ กำหนด storage ให้ Multer เก็บไฟล์พร้อมนามสกุล
 const storage = multer.diskStorage({
@@ -52,10 +62,13 @@ app.post("/convert-html-to-pdf", upload.single("file"), async (req, res) => {
     // ลบไฟล์ HTML ชั่วคราว
     fs.unlinkSync(htmlFile.path);
 
+    // ใช้ชื่อไฟล์ต้นฉบับเป็นชื่อ PDF
+    const pdfFileName = path.basename(htmlFile.originalname, ext) + ".pdf";
+
     // ส่ง PDF กลับ frontend
     res.set({
       "Content-Type": "application/pdf",
-      "Content-Disposition": 'attachment; filename="converted.pdf"',
+      "Content-Disposition": `attachment; filename="${pdfFileName}"`,
       "Content-Length": pdfBuffer.length,
     });
     res.send(pdfBuffer);
