@@ -1,6 +1,5 @@
-// server.js (Node.js)
 const express = require("express");
-const cors = require("cors"); // ✅ import cors
+const cors = require("cors");
 const multer = require("multer");
 const puppeteer = require("puppeteer");
 const fs = require("fs");
@@ -8,79 +7,242 @@ const path = require("path");
 
 const app = express();
 
-// ✅ เปิด CORS
+const PORT = 3000;
+
+let browser;
+
+// ========================================
+// CORS
+// ========================================
+
 app.use(
   cors({
-    origin: "http://localhost:4200", // ให้เฉพาะ frontend Angular
+    origin: true,
     methods: ["GET", "POST"],
     allowedHeaders: ["Content-Type"],
-  })
+  }),
 );
 
-// ✅ กำหนด storage ให้ Multer เก็บไฟล์พร้อมนามสกุล
+// ========================================
+// Puppeteer
+// ========================================
+
+async function initBrowser() {
+  browser = await puppeteer.launch({
+    headless: true,
+    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+  });
+
+  console.log("✅ Chromium started");
+}
+
+// ========================================
+// Multer
+// ========================================
+
+const tempDir = path.join(__dirname, "tmp");
+
+// สร้าง tmp ถ้ายังไม่มี
+if (!fs.existsSync(tempDir)) {
+  fs.mkdirSync(tempDir, {
+    recursive: true,
+  });
+}
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    cb(null, "tmp/"); // โฟลเดอร์ temp
+    cb(null, tempDir);
   },
+
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
+
     const baseName = path.basename(file.originalname, ext);
-    cb(null, baseName + "-" + Date.now() + ext); // myfile-1693827229371.html
+
+    cb(null, baseName + "-" + Date.now() + ext);
   },
 });
 
-const upload = multer({ storage });
-
-app.post("/convert-html-to-pdf", upload.single("file"), async (req, res) => {
-  const htmlFile = req.file;
-  if (!htmlFile) return res.status(400).send("No file uploaded");
-
-  // ✅ ตรวจสอบว่าเป็น HTML
-  const ext = path.extname(htmlFile.originalname).toLowerCase();
-  if (htmlFile.mimetype !== "text/html" || ![".html", ".htm"].includes(ext)) {
-    fs.unlinkSync(htmlFile.path); // ลบไฟล์ temp
-    return res.status(400).send("Uploaded file is not valid HTML");
-  }
-
-  try {
-    // เปิด Chromium
-    const browser = await puppeteer.launch({
-      headless: true, // หรือ "new" ถ้าใช้ puppeteer v21+
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
-    });
-    const page = await browser.newPage();
-
-    // โหลด HTML จากไฟล์
-    const htmlPath = "file://" + path.resolve(htmlFile.path);
-    await page.goto(htmlPath, { waitUntil: "networkidle0" });
-
-    // ✅ Export เป็น PDF
-    const pdfBuffer = await page.pdf({
-      format: "A4",
-      printBackground: true,
-    });
-
-    await browser.close();
-
-    // ลบไฟล์ HTML ชั่วคราว
-    fs.unlinkSync(htmlFile.path);
-
-    // ใช้ชื่อไฟล์ต้นฉบับเป็นชื่อ PDF
-    const pdfFileName = path.basename(htmlFile.originalname, ext) + ".pdf";
-
-    // ส่ง PDF กลับ frontend
-    res.set({
-      "Content-Type": "application/pdf",
-      "Content-Disposition": `attachment; filename="${pdfFileName}"`,
-      "Content-Length": pdfBuffer.length,
-    });
-    res.send(pdfBuffer);
-  } catch (err) {
-    console.error(err);
-    // ลบไฟล์ temp แม้เกิด error
-    if (fs.existsSync(htmlFile.path)) fs.unlinkSync(htmlFile.path);
-    res.status(500).send("Failed to convert HTML to PDF");
-  }
+const upload = multer({
+  storage,
 });
 
-app.listen(3000, () => console.log("Node.js service running on port 3000"));
+// ========================================
+// Health Check
+// ========================================
+
+app.get("/health", (req, res) => {
+  res.json({
+    success: true,
+    service: "html-to-pdf",
+    status: "UP",
+  });
+});
+
+// ========================================
+// HTML -> PDF
+// ========================================
+
+app.post(
+  "/api/convert-html-to-pdf",
+  upload.single("file"),
+  async (req, res) => {
+    const htmlFile = req.file;
+
+    if (!htmlFile) {
+      return res.status(400).json({
+        success: false,
+        message: "No file uploaded",
+      });
+    }
+
+    const ext = path.extname(htmlFile.originalname).toLowerCase();
+
+    // ========================================
+    // Validate HTML
+    // ========================================
+
+    if (![".html", ".htm"].includes(ext)) {
+      if (fs.existsSync(htmlFile.path)) {
+        fs.unlinkSync(htmlFile.path);
+      }
+
+      return res.status(400).json({
+        success: false,
+        message: "Uploaded file is not valid HTML",
+      });
+    }
+
+    let page;
+
+    try {
+      console.log(`📄 Converting: ${htmlFile.originalname}`);
+
+      // ========================================
+      // New Page
+      // ========================================
+
+      page = await browser.newPage();
+
+      // ========================================
+      // Load HTML
+      // ========================================
+
+      const htmlPath = "file://" + path.resolve(htmlFile.path);
+
+      await page.goto(htmlPath, {
+        waitUntil: "networkidle0",
+      });
+
+      // ========================================
+      // Generate PDF
+      // ========================================
+
+      const pdfBuffer = await page.pdf({
+        format: "A4",
+
+        printBackground: true,
+
+        margin: {
+          top: "20mm",
+          right: "15mm",
+          bottom: "20mm",
+          left: "15mm",
+        },
+      });
+
+      // ========================================
+      // Close Page
+      // ========================================
+
+      await page.close();
+      page = null;
+
+      // ========================================
+      // Delete temporary HTML
+      // ========================================
+
+      if (fs.existsSync(htmlFile.path)) {
+        fs.unlinkSync(htmlFile.path);
+      }
+
+      // ========================================
+      // PDF filename
+      // ========================================
+
+      const pdfFileName = path.basename(htmlFile.originalname, ext) + ".pdf";
+
+      // ========================================
+      // Response
+      // ========================================
+
+      res.set({
+        "Content-Type": "application/pdf",
+
+        "Content-Disposition": `attachment; filename="${pdfFileName}"`,
+
+        "Content-Length": pdfBuffer.length,
+      });
+
+      res.send(pdfBuffer);
+
+      console.log(`✅ PDF generated: ${pdfFileName}`);
+    } catch (err) {
+      console.error("❌ PDF conversion error:", err);
+
+      // Close page
+      if (page) {
+        try {
+          await page.close();
+        } catch (e) {
+          console.error(e);
+        }
+      }
+
+      // Delete temp file
+      if (htmlFile && fs.existsSync(htmlFile.path)) {
+        try {
+          fs.unlinkSync(htmlFile.path);
+        } catch (e) {
+          console.error(e);
+        }
+      }
+
+      if (!res.headersSent) {
+        res.status(500).json({
+          success: false,
+          message: "Failed to convert HTML to PDF",
+          error: err.message,
+        });
+      }
+    }
+  },
+);
+
+// ========================================
+// Start Server
+// ========================================
+
+async function start() {
+  try {
+    await initBrowser();
+
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`
+========================================
+ HTML TO PDF SERVICE
+========================================
+ Server : http://localhost:${PORT}
+ Health : http://localhost:${PORT}/health
+ API    : POST /api/convert-html-to-pdf
+========================================
+        `);
+    });
+  } catch (error) {
+    console.error("❌ Failed to start server:", error);
+
+    process.exit(1);
+  }
+}
+
+start();
